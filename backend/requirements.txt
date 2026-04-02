@@ -1,0 +1,3 @@
+fastapi>=0.107
+uvicorn[standard]>=0.22
+pydantic>=2.6
