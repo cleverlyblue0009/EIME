@@ -6,7 +6,8 @@
     "checkJs": false,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "composite": true
   },
   "include": ["vite.config.*"]
 }

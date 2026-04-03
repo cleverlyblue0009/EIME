@@ -8,6 +8,7 @@ const TopBar: React.FC = () => {
   const analyze = useDashboardStore((state) => state.analyze);
   const simulate = useDashboardStore((state) => state.simulate);
   const isAnalyzing = useDashboardStore((state) => state.isAnalyzing);
+  const apiError = useDashboardStore((state) => state.apiError);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-white/10 bg-gradient-to-r from-slate-900/80 to-slate-900/40 p-4 shadow-panel-md">
@@ -20,6 +21,12 @@ const TopBar: React.FC = () => {
           <h1 className="text-2xl font-semibold text-white">Intent Modeling Engine</h1>
         </div>
       </div>
+
+      {apiError ? (
+        <div className="w-full rounded-2xl border border-red-400/50 bg-red-500/15 px-3 py-2 text-sm text-red-300">
+          <strong>Error:</strong> {apiError}
+        </div>
+      ) : null}
 
       <div className="flex flex-1 flex-wrap items-center justify-end gap-3">
         <button

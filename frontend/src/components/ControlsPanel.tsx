@@ -15,7 +15,7 @@ const ControlsPanel: React.FC = () => {
       simulate: state.simulate,
     }));
 
-  const branchOptions = ["deterministic", "chaotic"];
+  const branchOptions: Array<"deterministic" | "random"> = ["deterministic", "random"];
   const scenarioOptions = ["Base", "Edge", "Stress Test"];
 
   return (

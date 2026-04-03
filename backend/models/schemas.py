@@ -1,64 +1,28 @@
-from typing import Dict, List, Optional
-from pydantic import BaseModel
+from typing import Literal
+from pydantic import BaseModel, Field
 
 
-class CodePayload(BaseModel):
-    code: Optional[str] = None
+class AnalyzeRequest(BaseModel):
+    code: str
     language: str = "python"
-    scenario: Optional[str] = "base"
-    input_size: Optional[int] = 50
-    branch_behavior: Optional[str] = "deterministic"
+
+    model_config = {"extra": "ignore"}  # changed
 
 
-class TraceStep(BaseModel):
-    id: str
-    label: str
-    line: Optional[int]
-    duration_ms: float
-    type: str
-    variables: Dict[str, str] = {}
+class SimulateRequest(BaseModel):
+    code: str
+    input_size: int = Field(default=10, ge=1, le=1000)
+    branch_mode: Literal["deterministic", "random"] = "deterministic"
+
+    model_config = {"extra": "ignore"}  # changed
 
 
-class DivergenceDetail(BaseModel):
-    first_divergence: str
-    score: float
-    severity: str
-    causal_chain: List[str]
-    highlights: List[str] = []
+class AnalyzeResponse(BaseModel):
+    execution_trace: list[dict]
+    intent_result: dict
+    divergence: dict
+    graph: dict
+    reasoning: dict
+    metrics: dict[str, float]
 
-
-class GraphNode(BaseModel):
-    id: str
-    label: str
-    type: str
-    status: Optional[str] = None
-    highlight: bool = False
-
-
-class GraphEdge(BaseModel):
-    id: str
-    source: str
-    target: str
-    type: str
-    highlight: bool = False
-
-
-class GraphPayload(BaseModel):
-    nodes: List[GraphNode]
-    edges: List[GraphEdge]
-    first_divergence: str
-
-
-class TraceResponse(BaseModel):
-    execution_trace: List[TraceStep]
-    intent_trace: List[TraceStep]
-    divergence: DivergenceDetail
-    graph: GraphPayload
-    metrics: Dict[str, str]
-
-
-class SimulationResponse(BaseModel):
-    scenario: str
-    status: str
-    message: str
-    metrics: Dict[str, str]
+    model_config = {"extra": "ignore"}  # changed
