@@ -3,90 +3,154 @@ from __future__ import annotations
 from typing import Any
 
 
+def _summarize_diff(state_diff: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if state_diff.get("added"):
+        parts.append(f"Added {', '.join(state_diff['added'].keys())}")
+    if state_diff.get("changed"):
+        parts.append(f"Changed {', '.join(state_diff['changed'].keys())}")
+    for mutation in state_diff.get("mutations", []):
+        if mutation.get("type") == "list_length_change":
+            parts.append(
+                f"{mutation.get('variable')} length {mutation.get('from')}→{mutation.get('to')}"
+            )
+    return "; ".join(parts) if parts else "State unchanged."
+
+
+def _semantic_label(entry: dict[str, Any], intent_ops: dict[int, str]) -> tuple[str, str]:
+    line = entry.get("line")
+    event = entry.get("event")
+    state_diff = entry.get("state_diff", {})
+
+    if line in intent_ops:
+        label = intent_ops[line]
+        return label, label
+
+    for mutation in state_diff.get("mutations", []):
+        if mutation.get("type") == "list_length_change" and mutation.get("delta", 0) > 0:
+            variable = mutation.get("variable")
+            added = mutation.get("added_items", [])
+            if added:
+                return (
+                    f"Append {added[-1]} to {variable}",
+                    f"Appended {added[-1]} to {variable}",
+                )
+            return (
+                f"Append item to {variable}",
+                f"Appended new item to {variable}",
+            )
+
+    if event == "return":
+        return "Return result", "Return from function"
+    if event == "call":
+        return "Call function", "Entered function call"
+    if event == "exception":
+        return "Exception raised", "An exception interrupted execution"
+    if event == "line":
+        return f"Execute line {line}", f"Executed line {line}"
+
+    return "Execution step", "Execution step"
+
+
 def build_graph(
-    execution_trace: list[dict[str, Any]],
-    intent_trace: list[dict[str, Any]],
-    mismatches: list[dict[str, Any]],
+    semantic_trace: list[dict[str, Any]],
+    intent_result: dict[str, Any],
+    divergence: dict[str, Any],
 ) -> dict[str, Any]:
-    """Construct a D3-compatible graph of actual and intent steps."""
-    truncated = False
-    max_nodes = 200
-    actual_steps = execution_trace
-    if len(actual_steps) > max_nodes:
-        truncated = True
-        actual_steps = actual_steps[:max_nodes]
+    intent_ops = {
+        op.get("line"): op.get("description")
+        for op in intent_result.get("semantic_operations", [])
+        if op.get("line")
+    }
+
+    divergence_lines = {m.get("line") for m in divergence.get("mismatches", []) if m.get("line")}
+    divergence_steps = {m.get("step") for m in divergence.get("mismatches", []) if m.get("step")}
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
-    exec_node_by_step: dict[int, str] = {}
-    divergence_steps: set[int] = {
-        m["step"] for m in mismatches if m.get("step") is not None
-    }
 
-    for idx, entry in enumerate(actual_steps):
-        step = entry.get("step", idx + 1)
+    previous_id: str | None = None
+    for entry in semantic_trace:
+        step = entry.get("step")
         node_id = f"exec-{step}"
-        node_type = "divergence" if step in divergence_steps else "actual"
-        nodes.append(
-            {
-                "id": node_id,
-                "label": f"{entry.get('func','<module>')}@{entry.get('line',0)}",
-                "line": entry.get("line", 0) or 0,
-                "type": node_type,
-                "step": step,
-            }
-        )
-        exec_node_by_step[step] = node_id
+        line = entry.get("line") or 0
+        label, description = _semantic_label(entry, intent_ops)
+        diff_summary = _summarize_diff(entry.get("state_diff", {}))
+        if diff_summary and diff_summary != "State unchanged.":
+            description = f"{description}. {diff_summary}"
 
-    for idx in range(len(actual_steps) - 1):
-        edges.append(
-            {
-                "source": nodes[idx]["id"],
-                "target": nodes[idx + 1]["id"],
-                "type": "control_flow",
-            }
-        )
+        node_type = "actual"
+        if step in divergence_steps or line in divergence_lines:
+            node_type = "divergence"
+
+        node = {
+            "id": node_id,
+            "type": node_type,
+            "title": label,
+            "description": description,
+            "line_number": line,
+            "function": entry.get("func") or "<module>",
+            "variables": entry.get("locals", {}),
+            "state_diff": entry.get("state_diff", {}),
+            "iteration": entry.get("iteration"),
+            "children": [],
+        }
+        nodes.append(node)
+
+        if previous_id:
+            edges.append(
+                {"source": previous_id, "target": node_id, "type": "control_flow"}
+            )
+        previous_id = node_id
 
     intent_nodes: list[dict[str, Any]] = []
-    intent_nodes_by_line: dict[int, list[str]] = {}
-    for entry in intent_trace:
-        node_id = f"intent-{entry.get('step', 0)}"
+    for idx, op in enumerate(intent_result.get("semantic_operations", [])):
         intent_nodes.append(
             {
-                "id": node_id,
-                "label": f"intent@{entry.get('line', 0) or 0}",
-                "line": entry.get("line", 0) or 0,
-                "type": "intent",
-                "step": entry.get("step", 0),
+                "id": f"intent-{idx+1}",
+                "type": "intended",
+                "title": op.get("description"),
+                "description": op.get("description"),
+                "line_number": op.get("line") or 0,
+                "function": "intent",
+                "variables": {},
+                "state_diff": {},
+                "iteration": None,
+                "children": [],
             }
         )
-        intent_nodes_by_line.setdefault(entry.get("line", 0) or 0, []).append(node_id)
-
     nodes.extend(intent_nodes)
 
-    seen_links: set[tuple[str, str]] = set()
-    for mismatch in mismatches:
-        actual_step = mismatch.get("step")
-        line = mismatch.get("line", 0) or 0
-        actual_id = exec_node_by_step.get(actual_step)
-        if not actual_id:
-            continue
-        targets = intent_nodes_by_line.get(line, [])
-        for target_id in targets:
-            link = (actual_id, target_id)
-            if link in seen_links:
-                continue
-            edges.append(
-                {"source": actual_id, "target": target_id, "type": "divergence_link"}
-            )
-            seen_links.add(link)
-            break
+    for idx in range(1, len(intent_nodes)):
+        edges.append(
+            {
+                "source": intent_nodes[idx - 1]["id"],
+                "target": intent_nodes[idx]["id"],
+                "type": "intent_flow",
+            }
+        )
+
+    # Divergence links: connect actual to intent nodes with matching line
+    line_to_intent = {
+        node["line_number"]: node["id"]
+        for node in intent_nodes
+        if node.get("line_number")
+    }
+    for mismatch in divergence.get("mismatches", []):
+        line = mismatch.get("line")
+        step = mismatch.get("step")
+        if line and step:
+            target_id = line_to_intent.get(line)
+            if target_id:
+                edges.append(
+                    {
+                        "source": f"exec-{step}",
+                        "target": target_id,
+                        "type": "divergence",
+                    }
+                )
 
     return {
         "nodes": nodes,
         "edges": edges,
-        "metadata": {
-            "truncated": truncated,
-            "total_steps": len(execution_trace),
-        },
     }

@@ -1,264 +1,219 @@
 from __future__ import annotations
 
-import json
+import ast
 import logging
 import os
+from typing import Any
 
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
-from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _node_source(code: str, node: ast.AST) -> str:
+    try:
+        return ast.get_source_segment(code, node) or ast.unparse(node)
+    except Exception:
+        return ast.unparse(node)
+
+
+class _IntentVisitor(ast.NodeVisitor):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.operations: list[dict[str, Any]] = []
+
+    def _add(self, node: ast.AST, operation: str, description: str) -> None:
+        line = getattr(node, "lineno", 0) or 0
+        self.operations.append(
+            {"line": line, "operation": operation, "description": description}
+        )
+
+    def visit_For(self, node: ast.For) -> None:
+        self._add(
+            node,
+            "loop",
+            f"Loop over {_node_source(self.code, node.iter)}",
+        )
+        self.generic_visit(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self._add(node, "loop", f"While {_node_source(self.code, node.test)}")
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:
+        condition = _node_source(self.code, node.test)
+        self._add(node, "condition", f"If {condition}")
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        targets = ", ".join(_node_source(self.code, t) for t in node.targets)
+        value = _node_source(self.code, node.value)
+        self._add(node, "assignment", f"Set {targets} = {value}")
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        target = _node_source(self.code, node.target)
+        value = _node_source(self.code, node.value)
+        self._add(node, "assignment", f"Update {target} with {value}")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func_source = _node_source(self.code, node.func)
+        description = f"Call {func_source}"
+        if isinstance(node.func, ast.Attribute):
+            attr = node.func.attr
+            base = _node_source(self.code, node.func.value)
+            if attr == "append":
+                arg = _node_source(self.code, node.args[0]) if node.args else "value"
+                description = f"Append {arg} to {base}"
+            elif attr == "extend":
+                arg = _node_source(self.code, node.args[0]) if node.args else "values"
+                description = f"Extend {base} with {arg}"
+            elif attr == "pop":
+                description = f"Pop from {base}"
+            elif attr == "popleft":
+                description = f"Queue pop left from {base}"
+            elif attr == "push":
+                description = f"Push into {base}"
+        elif isinstance(node.func, ast.Name):
+            if node.func.id in {"heappush", "heappop"}:
+                description = f"Heap operation {node.func.id}"
+        self._add(node, "call", description)
+        self.generic_visit(node)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        value = _node_source(self.code, node.value) if node.value else "None"
+        self._add(node, "return", f"Return {value}")
+        self.generic_visit(node)
 
 
 def _pattern_confidence(label: str) -> float:
-    """Map intent labels to heuristic confidence scores."""
     mapping = {
-        "fibonacci_sequence": 0.9,
+        "filter_even_numbers": 0.9,
         "sequence_accumulation": 0.8,
         "sorting_algorithm": 0.75,
         "recursive_computation": 0.85,
-        "matrix_traversal": 0.7,
-        "string_processing": 0.65,
-        "counting_or_aggregation": 0.6,
+        "tree_traversal": 0.8,
+        "graph_traversal": 0.8,
+        "priority_queue_operation": 0.75,
         "general_computation": 0.5,
     }
     return mapping.get(label, 0.5)
 
 
-def _build_intent_trace(label: str, code: str, ir: dict[str, Any]) -> list[dict[str, Any]]:
-    """Create an expected trace snapshot based on the detected pattern."""
-    loops = ir.get("loops", [])
-    base_line = loops[0]["lineno"] if loops else 0
-    steps: list[dict[str, Any]] = []
-
-    if label == "fibonacci_sequence":
-        a, b = 0, 1
-        for idx in range(4):
-            steps.append(
-                {
-                    "step": idx + 1,
-                    "line": base_line,
-                    "expected_state": f"Iteration {idx+1} should produce (a,b)=({a},{b})",
-                    "invariant": "b == previous a + previous b",
-                    "expected_locals": {"a": a, "b": b},
-                }
-            )
-            a, b = b, a + b
-        return steps
-
-    if label == "sequence_accumulation":
-        for idx in range(3):
-            expected_len = idx + 1
-            steps.append(
-                {
-                    "step": expected_len,
-                    "line": base_line,
-                    "expected_state": f"Append adds item {expected_len}",
-                    "invariant": "len(result) == number of loop iterations",
-                    "expected_locals": {"len_result": expected_len},
-                }
-            )
-        return steps
-
-    if label == "sorting_algorithm":
-        steps.append(
-            {
-                "step": 1,
-                "line": base_line,
-                "expected_state": "All input values should persist into the output",
-                "invariant": "sorted(output) == sorted(input)",
-                "expected_locals": {"output_ordered": True},
-            }
-        )
-        steps.append(
-            {
-                "step": 2,
-                "line": base_line,
-                "expected_state": "Each swap brings elements closer to completion",
-                "invariant": "no element lost",
-                "expected_locals": {"swap_progress": "monotonic"},
-            }
-        )
-        return steps
-
-    if label == "recursive_computation":
-        steps.append(
-            {
-                "step": 1,
-                "line": base_line,
-                "expected_state": "Function should invoke itself with smaller inputs",
-                "invariant": "depth eventually reaches base case",
-                "expected_locals": {"depth": "decreasing"},
-            }
-        )
-        return steps
-
-    if label == "matrix_traversal":
-        steps.append(
-            {
-                "step": 1,
-                "line": base_line,
-                "expected_state": "Nested loops cover both dimensions",
-                "invariant": "each cell visited exactly once",
-                "expected_locals": {"i": "row index", "j": "column index"},
-            }
-        )
-        return steps
-
-    if label == "string_processing":
-        steps.append(
-            {
-                "step": 1,
-                "line": base_line,
-                "expected_state": "Loop constructs strings by concatenating or joining components",
-                "invariant": "result is string",
-                "expected_locals": {"result": "string"},
-            }
-        )
-        return steps
-
-    if label == "counting_or_aggregation":
-        steps.append(
-            {
-                "step": 1,
-                "line": base_line,
-                "expected_state": "Counter increments each loop",
-                "invariant": "counter == number of processed items",
-                "expected_locals": {"counter": "integer"},
-            }
-        )
-        return steps
-
-    for idx in range(2):
-        steps.append(
-            {
-                "step": idx + 1,
-                "line": base_line,
-                "expected_state": "Variable assignments change state sequentially",
-                "invariant": "assignments update locals",
-                "expected_locals": {},
-            }
-        )
-    return steps
-
-
 def _detect_pattern(code: str, ir: dict[str, Any]) -> tuple[str, str]:
-    """Determine the intent label and description from code heuristics."""
     lowered = code.lower()
     normalized = "".join(lowered.split())
-    loops = ir.get("loops", [])
-    has_loop = bool(loops)
-    has_append = ".append(" in lowered
-    has_sorted = ".sort()" in lowered or "sorted(" in lowered
-    has_nested_loops = len(loops) >= 2
-    has_recursion = ir.get("has_recursion", False)
-    has_matrix_index = "[i][j]" in normalized or "[j][i]" in normalized
-    has_string_concat = "+=" in lowered or "join(" in lowered
-    has_counting = "+=1" in normalized or "+=1" in lowered
-    fib_pattern = "a,b=b,a+b" in normalized
-    fib_name = any(
-        "fib" in entry.get("name", "").lower()
-        for entry in ir.get("functions", [])
-    ) or any(
-        "fib" in entry.get("name", "").lower()
-        for entry in ir.get("variables", [])
-    )
 
-    if fib_name or fib_pattern:
+    if "heapq" in lowered or "heappush" in lowered or "heappop" in lowered:
+        return (
+            "priority_queue_operation",
+            "The code manipulates a priority queue using heap operations.",
+        )
+    if "deque" in lowered and ("popleft" in lowered or "appendleft" in lowered):
+        return (
+            "graph_traversal",
+            "The code uses a queue-like structure, suggesting breadth-first traversal.",
+        )
+    if ".append(" in lowered and ".pop(" in lowered and "stack" in lowered:
+        return (
+            "tree_traversal",
+            "Stack-style operations suggest depth-first traversal.",
+        )
+    if "fib" in lowered or "a,b=b,a+b" in normalized:
         return (
             "fibonacci_sequence",
             "The code iterates over Fibonacci-style pair updates.",
         )
-    if has_loop and has_append and len(loops) == 1:
+    if "%2==0" in normalized or "%2==0" in lowered:
         return (
-            "sequence_accumulation",
-            "A loop builds up a list through repeated append operations.",
+            "filter_even_numbers",
+            "The code filters even numbers based on a modulo check.",
         )
-    if has_nested_loops and (has_sorted or "swap" in lowered):
-        return (
-            "sorting_algorithm",
-            "Nested loops are rearranging elements, suggesting a sorting pass.",
-        )
-    if has_recursion:
+    if ir.get("has_recursion"):
         return (
             "recursive_computation",
-            "A function is calling itself, which suggests recursion.",
+            "A function is calling itself, indicating recursion.",
         )
-    if has_nested_loops and has_matrix_index:
+    if ir.get("loops") and ".append(" in lowered:
         return (
-            "matrix_traversal",
-            "Nested loops with two-dimensional indexing indicate matrix work.",
-        )
-    if has_loop and has_string_concat:
-        return (
-            "string_processing",
-            "Loop-based concatenation or join hints at string assembly.",
-        )
-    if has_loop and has_counting:
-        return (
-            "counting_or_aggregation",
-            "A loop increments counters, implying aggregation.",
+            "sequence_accumulation",
+            "A loop builds a collection through repeated append operations.",
         )
     return (
         "general_computation",
-        "Default fallback when no more specific intent is detected.",
+        "General computation with no specific pattern detected.",
     )
 
 
-logger = logging.getLogger(__name__)
+def _llm_refine_intent(code: str) -> tuple[str | None, str | None]:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None, None
+    prompt = (
+        f"{HUMAN_PROMPT}"
+        "Explain the purpose of this code block in simple human terms.\n"
+        f"Code: {code}\n"
+        f"{AI_PROMPT}"
+    )
+    try:
+        client = Anthropic(api_key=api_key)
+        response = client.completions.create(
+            model="claude-3.0",
+            prompt=prompt,
+            max_tokens_to_sample=120,
+            temperature=0.2,
+        )
+        description = response.completion.strip()
+        return "llm_refined", description
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Anthropic intent refinement failed: %s", exc)
+        return None, None
 
 
-def model_intent(code: str, ir: dict[str, Any]) -> dict[str, Any]:
-    """Produce a rule-based intent label, description, and expectations."""
-    intent_label, description = _detect_pattern(code, ir)
-    confidence = _pattern_confidence(intent_label)
-    intent_trace = _build_intent_trace(intent_label, code, ir)
+def analyze_intent(code: str, ir: dict[str, Any]) -> dict[str, Any]:
+    """Produce a semantic intent label, description, and operation trace."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        tree = None
+
+    operations: list[dict[str, Any]] = []
+    if tree is not None:
+        visitor = _IntentVisitor(code)
+        visitor.visit(tree)
+        operations = visitor.operations
+
+    label, description = _detect_pattern(code, ir)
+    confidence = _pattern_confidence(label)
     source = "rules"
 
-    if intent_label == "general_computation":
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            ir_summary = (
-                f"{len(ir.get('functions', []))} functions, "
-                f"{len(ir.get('loops', []))} loops, "
-                f"{len(ir.get('variables', []))} variables observed"
-            )
-            prompt = (
-                f"{HUMAN_PROMPT}"
-                "Given this Python code and its AST summary, describe in one sentence what it is intended to compute.\n"
-                f"Code: {code}\n"
-                f"AST summary: {ir_summary}\n"
-                'Respond with JSON only: {"intent_label": str, "description": str}\n'
-                f"{AI_PROMPT}"
-            )
-            try:
-                client = Anthropic(api_key=api_key)
-                response = client.completions.create(
-                    model="claude-3.0",
-                    prompt=prompt,
-                    max_tokens_to_sample=200,
-                    temperature=0.2,
-                )
-                completion = response.completion.strip()
-                start = completion.find("{")
-                end = completion.rfind("}")
-                payload = completion
-                if start != -1 and end != -1:
-                    payload = completion[start : end + 1]
-                parsed = json.loads(payload)
-                llm_label = parsed.get("intent_label")
-                llm_description = parsed.get("description")
-                if llm_label:
-                    intent_label = llm_label
-                if llm_description:
-                    description = llm_description
-                confidence = min(1.0, max(confidence, 0.7))
-                source = "rules+llm"
-            except Exception as exc:  # pragma: no cover - fallback
-                logger.warning("Anthropic intent refinement failed: %s", exc)
+    llm_label, llm_description = _llm_refine_intent(code)
+    if llm_description:
+        description = llm_description
+        if llm_label:
+            label = llm_label
+        confidence = min(1.0, max(confidence, 0.7))
+        source = "rules+llm"
+
+    intent_trace = [
+        {
+            "step": idx + 1,
+            "line": op["line"],
+            "expected_state": op["description"],
+            "expected_locals": {},
+            "invariant": "len(result) == number of loop iterations"
+            if label == "filter_even_numbers"
+            else "",
+        }
+        for idx, op in enumerate(operations)
+    ]
 
     return {
-        "intent_label": intent_label,
+        "label": label,
         "description": description,
         "confidence": confidence,
         "source": source,
+        "semantic_operations": operations,
         "intent_trace": intent_trace,
     }

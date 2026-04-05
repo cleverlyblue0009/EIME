@@ -5,6 +5,7 @@ import { useDashboardStore } from "../store/useDashboardStore";
 
 const TimelineScrubber: React.FC = () => {
   const timeline = useDashboardStore((state) => state.timeline);
+  const setCurrentFrame = useDashboardStore((state) => state.setCurrentFrame);
 
   return (
     <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-panel-md">
@@ -32,13 +33,15 @@ const TimelineScrubber: React.FC = () => {
       <div className="mt-3 flex items-center gap-3">
         <input
           type="range"
-          min={0}
-          max={100}
-          value={timeline.progress}
-          readOnly
+          min={timeline.totalFrames > 0 ? 1 : 0}
+          max={timeline.totalFrames || 1}
+          value={timeline.currentFrame}
+          onChange={(event) => setCurrentFrame(Number(event.target.value))}
           className="h-1 w-full accent-emerald-500"
         />
-        <span className="text-xs text-slate-400">Frame {timeline.frame}</span>
+        <span className="text-xs text-slate-400">
+          Frame {timeline.currentFrame} / {timeline.totalFrames}
+        </span>
       </div>
     </div>
   );

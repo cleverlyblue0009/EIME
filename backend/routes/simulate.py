@@ -31,10 +31,57 @@ class _LoopBoundTransformer(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
+def _apply_overrides(code: str, overrides: dict | None) -> str:
+    if not overrides:
+        return code
+
+    variables = overrides.get("variables") if isinstance(overrides, dict) else {}
+    condition = overrides.get("condition") if isinstance(overrides, dict) else None
+    condition_line = overrides.get("conditionLine") if isinstance(overrides, dict) else None
+    if condition_line is None and isinstance(overrides, dict):
+        condition_line = overrides.get("condition_line")
+
+    lines = code.split("\n")
+    start_marker = "# --- EIME SIM OVERRIDES START ---"
+    end_marker = "# --- EIME SIM OVERRIDES END ---"
+
+    if start_marker in lines and end_marker in lines:
+        start_idx = lines.index(start_marker)
+        end_idx = lines.index(end_marker)
+        if end_idx > start_idx:
+            del lines[start_idx : end_idx + 1]
+
+    if condition and condition_line:
+        index = condition_line - 1
+        if 0 <= index < len(lines):
+            line = lines[index]
+            stripped = line.lstrip()
+            indent = line[: len(line) - len(stripped)]
+            if stripped.startswith("if "):
+                after_if = stripped[len("if ") :]
+                suffix = after_if.split(":", 1)[1] if ":" in after_if else ""
+                lines[index] = f"{indent}if {condition}:{suffix}"
+            if stripped.startswith("while "):
+                after_while = stripped[len("while ") :]
+                suffix = after_while.split(":", 1)[1] if ":" in after_while else ""
+                lines[index] = f"{indent}while {condition}:{suffix}"
+
+    override_lines = []
+    if isinstance(variables, dict):
+        for key, value in variables.items():
+            override_lines.append(f"{key} = {value}")
+
+    if override_lines:
+        lines = [start_marker, *override_lines, end_marker, *lines]
+
+    return "\n".join(lines)
+
+
 @simulate_router.post("/simulate", response_model=AnalyzeResponse)
 async def simulate(request: SimulateRequest):
     try:
-        tree = ast.parse(request.code)
+        patched_code = _apply_overrides(request.code, request.overrides)
+        tree = ast.parse(patched_code)
     except SyntaxError as exc:
         raise HTTPException(status_code=422, detail=f"Syntax error: {exc}")
 

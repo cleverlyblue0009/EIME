@@ -1,7 +1,8 @@
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = (import.meta.env.VITE_API_BASE ?? "/api").replace(/\/$/, "");
 
 type AnalyzePayload = {
-  code: string; // make required (backend needs it)
+  code: string;
+  gemini_api_key?: string | null;
 };
 
 export async function analyzeCode(payload: AnalyzePayload) {
@@ -13,7 +14,7 @@ export async function analyzeCode(payload: AnalyzePayload) {
       },
       body: JSON.stringify({
         code: payload.code,
-        language: "python", // backend expects this (default but safe)
+        gemini_api_key: payload.gemini_api_key || null,
       }),
     });
 
@@ -33,19 +34,18 @@ type SimulationPayload = {
   code: string;
   input_size?: number;
   branch_mode?: "deterministic" | "random";
+  overrides?: Record<string, unknown>;
 };
 
 export async function simulateScenario(payload: SimulationPayload) {
   try {
-    const response = await fetch(`${API_BASE}/simulate`, {
+    const response = await fetch(`${API_BASE}/analyze`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         code: payload.code,
-        input_size: payload.input_size ?? 10,
-        branch_mode: payload.branch_mode ?? "deterministic",
       }),
     });
 

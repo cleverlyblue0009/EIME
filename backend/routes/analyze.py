@@ -5,7 +5,8 @@ from backend.services.ai_reasoning_engine import generate_reasoning
 from backend.services.divergence_engine import compute_divergence
 from backend.services.execution_engine import trace_execution
 from backend.services.graph_engine import build_graph
-from backend.services.intent_engine import model_intent
+from backend.services.intent_engine import analyze_intent
+from backend.services.state_model_engine import build_state_model
 from backend.services.parser_service import parse_code
 
 
@@ -31,11 +32,12 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             intent_result = {"error": "Intent modeling skipped after parsing failure."}
         else:
             try:
-                intent_result = model_intent(code, ir_result)
+                intent_result = analyze_intent(code, ir_result)
             except Exception as exc:  # pragma: no cover - defensive
                 intent_result = {"error": str(exc)}
 
         divergence_result = {}
+        semantic_trace: list[dict] = []
         if (
             isinstance(execution_result, dict)
             and not execution_result.get("error")
@@ -43,8 +45,16 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             and not intent_result.get("error")
         ):
             try:
+                state_model = build_state_model(
+                    execution_result.get("trace", []), ir_result
+                )
+                semantic_trace = state_model.get("semantic_trace", [])
                 divergence_result = compute_divergence(
-                    execution_result.get("trace", []), intent_result
+                    execution_result.get("trace", []),
+                    semantic_trace,
+                    intent_result,
+                    code,
+                    ir_result,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 divergence_result = {
@@ -73,9 +83,9 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             and not divergence_result.get("error")
         ):
             graph_result = build_graph(
-                execution_result.get("trace", []),
-                intent_result.get("intent_trace", []),
-                divergence_result.get("mismatches", []),
+                semantic_trace,
+                intent_result,
+                divergence_result,
             )
         else:
             graph_result = {
@@ -115,9 +125,21 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         else:
             execution_trace_field = []
 
-        intent_field = intent_result if not intent_result.get("error") else {"error": intent_result.get("error")}
-        divergence_field = divergence_result if not divergence_result.get("error") else {"error": divergence_result.get("error")}
-        graph_field = graph_result if "nodes" in graph_result else {"error": graph_result.get("error")}
+        intent_field = (
+            intent_result
+            if not intent_result.get("error")
+            else {"error": intent_result.get("error")}
+        )
+        divergence_field = (
+            divergence_result
+            if not divergence_result.get("error")
+            else {"error": divergence_result.get("error")}
+        )
+        graph_field = (
+            graph_result
+            if "nodes" in graph_result
+            else {"error": graph_result.get("error")}
+        )
         reasoning_field = (
             reasoning_result
             if reasoning_result and not reasoning_result.get("error")
@@ -126,6 +148,8 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
         response = AnalyzeResponse(
             execution_trace=execution_trace_field,
+            semantic_trace=semantic_trace,
+            intent=intent_field,
             intent_result=intent_field,
             divergence=divergence_field,
             graph=graph_field,
@@ -140,4 +164,3 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 
         traceback.print_exc()
         raise
-

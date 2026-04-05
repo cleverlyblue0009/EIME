@@ -1,135 +1,339 @@
 from __future__ import annotations
 
+import ast
 from typing import Any
 
 
-def _build_execution_line_counts(execution_trace: list[dict[str, Any]]) -> dict[int, int]:
-    """Count how many times each source line was executed."""
-    counts: dict[int, int] = {}
-    for entry in execution_trace:
-        if entry.get("event") != "line":
-            continue
-        line = entry.get("line")
-        if line is None:
-            continue
-        counts[line] = counts.get(line, 0) + 1
-    return counts
+
+def _node_source(code: str, node: ast.AST) -> str:
+    try:
+        return ast.get_source_segment(code, node) or ast.unparse(node)
+    except Exception:
+        return ast.unparse(node)
 
 
-def _serialize_locals(locals_dict: dict[str, Any]) -> dict[str, Any]:
-    """Shallow copy locals for safe inspection."""
-    return dict(locals_dict)
+def _find_return_slices(code: str) -> list[dict[str, Any]]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    slices: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Subscript):
+            target = node.value.value
+            if isinstance(target, ast.Name) and isinstance(node.value.slice, ast.Slice):
+                slices.append(
+                    {
+                        "line": node.lineno,
+                        "target": target.id,
+                        "slice": node.value.slice,
+                        "source": _node_source(code, node.value),
+                    }
+                )
+    return slices
+
+
+def _extract_loop_expectations(code: str) -> list[dict[str, Any]]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    loops: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For):
+            if isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name):
+                if node.iter.func.id == "range":
+                    loops.append(
+                        {
+                            "line": node.lineno,
+                            "range_args": node.iter.args,
+                            "source": _node_source(code, node.iter),
+                        }
+                    )
+    return loops
+
+
+def _collect_conditions(code: str) -> list[dict[str, Any]]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    conditions: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            body_lines = {
+                stmt.lineno for stmt in node.body if hasattr(stmt, "lineno")
+            }
+            orelse_lines = {
+                stmt.lineno for stmt in node.orelse if hasattr(stmt, "lineno")
+            }
+            conditions.append(
+                {
+                    "line": node.lineno,
+                    "test": node.test,
+                    "body_lines": body_lines,
+                    "orelse_lines": orelse_lines,
+                }
+            )
+    return conditions
+
+
+def _returns_in_loops(code: str) -> list[dict[str, Any]]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    returns: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.While)):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Return):
+                    returns.append(
+                        {
+                            "loop_line": node.lineno,
+                            "return_line": inner.lineno,
+                        }
+                    )
+    return returns
+
+
+def _evaluate_range(range_args: list[ast.AST], locals_snapshot: dict[str, Any]) -> int | None:
+    if not range_args:
+        return None
+    try:
+        compiled = [
+            eval(compile(ast.Expression(arg), "<range>", "eval"), {}, locals_snapshot)
+            for arg in range_args
+        ]
+        if not all(isinstance(val, int) for val in compiled):
+            return None
+        return len(range(*compiled))
+    except Exception:
+        return None
+
+
+def _collect_appends(semantic_trace: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    appended: dict[str, list[Any]] = {}
+    for entry in semantic_trace:
+        state_diff = entry.get("state_diff", {})
+        for mutation in state_diff.get("mutations", []):
+            if mutation.get("type") == "list_length_change" and mutation.get("delta", 0) > 0:
+                variable = mutation.get("variable")
+                if not variable:
+                    continue
+                appended.setdefault(variable, []).extend(mutation.get("added_items", []))
+    return appended
 
 
 def compute_divergence(
-    execution_trace: list[dict[str, Any]], intent_result: dict[str, Any]
+    execution_trace: list[dict[str, Any]],
+    semantic_trace: list[dict[str, Any]],
+    intent_result: dict[str, Any],
+    code: str,
+    ir: dict[str, Any],
 ) -> dict[str, Any]:
-    """Align execution to intent and surface divergence details."""
-    intent_trace = intent_result.get("intent_trace", [])
-    line_counts = _build_execution_line_counts(execution_trace)
-    used_execution_indices: set[int] = set()
-    aligned_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     mismatches: list[dict[str, Any]] = []
 
-    for intent_step in intent_trace:
-        target_line = intent_step.get("line")
-        match_idx = None
-        for idx, exec_step in enumerate(execution_trace):
-            if idx in used_execution_indices:
-                continue
-            if exec_step.get("line") == target_line:
-                match_idx = idx
-                break
-        if match_idx is not None:
-            used_execution_indices.add(match_idx)
-            aligned_pairs.append((intent_step, execution_trace[match_idx]))
-        else:
+    appended_map = _collect_appends(semantic_trace)
+    return_slices = _find_return_slices(code)
+    loops = _extract_loop_expectations(code)
+    loop_returns = _returns_in_loops(code)
+    conditions = _collect_conditions(code)
+
+    iteration_counts: dict[int, int] = {}
+    for entry in semantic_trace:
+        iteration_context = entry.get("state", {}).get("iteration_context", {})
+        for line, count in iteration_context.items():
+            iteration_counts[line] = max(iteration_counts.get(line, 0), count)
+
+    locals_by_line: dict[int, dict[str, Any]] = {}
+    for entry in semantic_trace:
+        line = entry.get("line")
+        if line and line not in locals_by_line:
+            locals_by_line[line] = entry.get("locals", {})
+
+    # Condition branch mismatches
+    for idx, entry in enumerate(semantic_trace[:-1]):
+        line = entry.get("line")
+        if not line:
+            continue
+        matching = [c for c in conditions if c.get("line") == line]
+        if not matching:
+            continue
+        condition = matching[0]
+        test_expr = condition.get("test")
+        locals_snapshot = entry.get("locals", {})
+        try:
+            condition_value = eval(
+                compile(ast.Expression(test_expr), "<condition>", "eval"),
+                {},
+                locals_snapshot,
+            )
+        except Exception:
+            continue
+        next_line = semantic_trace[idx + 1].get("line")
+        if condition_value and next_line not in condition.get("body_lines", set()):
             mismatches.append(
                 {
-                    "step": intent_step.get("step", 0),
-                    "line": target_line,
-                    "type": "missing_step",
-                    "expected": intent_step,
-                    "actual": None,
-                    "description": "Intent step did not occur in execution trace.",
+                    "step": entry.get("step"),
+                    "line": line,
+                    "type": "branch_mismatch",
+                    "expected": True,
+                    "actual": condition_value,
+                    "description": "Condition evaluated true but body was not executed.",
+                }
+            )
+        if not condition_value and next_line in condition.get("body_lines", set()):
+            mismatches.append(
+                {
+                    "step": entry.get("step"),
+                    "line": line,
+                    "type": "branch_mismatch",
+                    "expected": False,
+                    "actual": condition_value,
+                    "description": "Condition evaluated false but body was executed.",
                 }
             )
 
-    for intent_step, exec_step in aligned_pairs:
-        intent_step_index = intent_step.get("step", 0)
-        line = intent_step.get("line")
-        actual_locals = _serialize_locals(exec_step.get("locals", {}))
-        expected_locals = intent_step.get("expected_locals", {})
+    # Loop divergence
+    for loop in loops:
+        line = loop.get("line")
+        expected = _evaluate_range(loop.get("range_args", []), locals_by_line.get(line, {}))
+        actual = iteration_counts.get(line)
+        if expected is not None and actual is not None and expected != actual:
+            mismatches.append(
+                {
+                    "step": None,
+                    "line": line,
+                    "type": "loop_count",
+                    "expected": expected,
+                    "actual": actual,
+                    "description": f"Loop at line {line} executed {actual} times vs expected {expected}.",
+                }
+            )
 
-        for key, expected in expected_locals.items():
-            if key not in actual_locals:
-                continue
-            actual_value = actual_locals[key]
-            if str(expected) != str(actual_value):
-                mismatches.append(
-                    {
-                        "step": exec_step.get("step", 0),
-                        "line": line,
-                        "type": "variable_mismatch",
-                        "expected": expected,
-                        "actual": actual_value,
-                        "description": f"'{key}' differs: expected {expected}, got {actual_value}.",
-                    }
-                )
+    # Premature returns inside loops
+    for loop_return in loop_returns:
+        loop_line = loop_return.get("loop_line")
+        return_line = loop_return.get("return_line")
+        expected = None
+        for loop in loops:
+            if loop.get("line") == loop_line:
+                expected = _evaluate_range(loop.get("range_args", []), locals_by_line.get(loop_line, {}))
+                break
+        actual = iteration_counts.get(loop_line)
+        if expected is not None and actual is not None and actual < expected:
+            mismatches.append(
+                {
+                    "step": None,
+                    "line": return_line,
+                    "type": "premature_return",
+                    "expected": expected,
+                    "actual": actual,
+                    "description": "Return executed before loop completed expected iterations.",
+                }
+            )
 
-        if intent_step_index > 1 and line is not None:
-            actual_count = line_counts.get(line, 0)
-            if actual_count != intent_step_index:
-                mismatches.append(
-                    {
-                        "step": exec_step.get("step", 0),
-                        "line": line,
-                        "type": "loop_count",
-                        "expected": intent_step_index,
-                        "actual": actual_count,
-                        "description": f"Line {line} executed {actual_count} times vs expected {intent_step_index}.",
-                    }
-                )
-
-        if any("len" in key.lower() for key in expected_locals):
-            for candidate in ("result", "output", "data"):
-                actual_value = exec_step.get("locals", {}).get(candidate)
-                if isinstance(actual_value, list):
-                    expected_length = next(
-                        (
-                            value
-                            for key, value in expected_locals.items()
-                            if "len" in key.lower() and isinstance(value, int)
-                        ),
-                        None,
-                    )
-                    if expected_length is not None and len(actual_value) != expected_length:
+    # Return slicing divergence
+    for ret in return_slices:
+        line = ret.get("line")
+        target = ret.get("target")
+        if not target:
+            continue
+        appended_values = appended_map.get(target, [])
+        for entry in execution_trace:
+            if entry.get("event") == "return" and entry.get("line") == line:
+                returned = entry.get("value")
+                if isinstance(returned, list) and appended_values:
+                    if len(returned) < len(appended_values):
                         mismatches.append(
                             {
-                                "step": exec_step.get("step", 0),
+                                "step": entry.get("step"),
                                 "line": line,
-                                "type": "output_length",
-                                "expected": expected_length,
-                                "actual": len(actual_value),
-                                "description": "Output length differs from intent expectation.",
+                                "type": "missing_element",
+                                "expected": appended_values,
+                                "actual": returned,
+                                "description": "Returned list is missing elements from appended values.",
                             }
                         )
-                        break
+                    if ret.get("source"):
+                        mismatches.append(
+                            {
+                                "step": entry.get("step"),
+                                "line": line,
+                                "type": "output_slice",
+                                "expected": appended_values,
+                                "actual": returned,
+                                "description": f"Return slices list at line {line}: {ret.get('source')}",
+                            }
+                        )
 
-    exception_entries = [
-        entry for entry in execution_trace if entry.get("event") == "exception"
-    ]
-    for entry in exception_entries:
-        mismatches.append(
-            {
-                "step": entry.get("step", 0),
-                "line": entry.get("line"),
-                "type": "exception",
-                "expected": None,
-                "actual": entry.get("value"),
-                "description": "Execution raised an exception.",
-            }
+    # Output mismatch for list builders
+    for variable, appended_values in appended_map.items():
+        for entry in execution_trace:
+            if entry.get("event") == "return":
+                returned = entry.get("value")
+                if isinstance(returned, list):
+                    if len(returned) < len(appended_values):
+                        mismatches.append(
+                            {
+                                "step": entry.get("step"),
+                                "line": entry.get("line"),
+                                "type": "missing_element",
+                                "expected": appended_values,
+                                "actual": returned,
+                                "description": f"Output missing elements compared to {variable} append history.",
+                            }
+                        )
+                    if len(returned) > len(appended_values):
+                        mismatches.append(
+                            {
+                                "step": entry.get("step"),
+                                "line": entry.get("line"),
+                                "type": "extra_element",
+                                "expected": appended_values,
+                                "actual": returned,
+                                "description": f"Output contains extra elements not appended to {variable}.",
+                            }
+                        )
+                break
+
+    # State inconsistency
+    for entry in semantic_trace:
+        state_diff = entry.get("state_diff", {})
+        for mutation in state_diff.get("mutations", []):
+            if mutation.get("type") == "list_length_change" and mutation.get("delta", 0) < 0:
+                mismatches.append(
+                    {
+                        "step": entry.get("step"),
+                        "line": entry.get("line"),
+                        "type": "state_inconsistency",
+                        "expected": None,
+                        "actual": mutation,
+                        "description": f"List {mutation.get('variable')} shrank unexpectedly.",
+                    }
+                )
+
+    # Deduplicate mismatches
+    unique: list[dict[str, Any]] = []
+    seen_keys: set[tuple[Any, Any, Any, Any]] = set()
+    for mismatch in mismatches:
+        key = (
+            mismatch.get("type"),
+            mismatch.get("line"),
+            mismatch.get("step"),
+            mismatch.get("description"),
         )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique.append(mismatch)
+
+    mismatches = unique
 
     total_steps = len(execution_trace)
     score = min(len(mismatches) / max(total_steps, 1), 1.0)
@@ -142,14 +346,17 @@ def compute_divergence(
 
     first_divergence = None
     if mismatches:
-        earliest = min(mismatches, key=lambda entry: entry.get("step", 0))
+        earliest = min(
+            [m for m in mismatches if m.get("step") is not None] or mismatches,
+            key=lambda entry: entry.get("step") or 0,
+        )
         first_divergence = earliest.get("description", "Unknown divergence")
 
     seen_descriptions: set[str] = set()
     causal_chain: list[str] = []
     for mismatch in mismatches:
         desc = mismatch.get("description", "")
-        if desc and desc not in seen_descriptions and len(causal_chain) < 5:
+        if desc and desc not in seen_descriptions and len(causal_chain) < 6:
             seen_descriptions.add(desc)
             causal_chain.append(desc)
 
@@ -160,5 +367,5 @@ def compute_divergence(
         "severity": severity,
         "causal_chain": causal_chain,
         "total_steps": total_steps,
-        "aligned_steps": len(aligned_pairs),
+        "aligned_steps": max(total_steps - len(mismatches), 0),
     }

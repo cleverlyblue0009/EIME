@@ -1,9 +1,8 @@
 import React from "react";
-import { motion } from "framer-motion";
 import { useDashboardStore } from "../store/useDashboardStore";
 
 const ControlsPanel: React.FC = () => {
-  const { inputSize, branchBehavior, scenario, setInputSize, setBranchBehavior, setScenario, simulation, simulate } =
+  const { inputSize, branchBehavior, scenario, setInputSize, setBranchBehavior, setScenario, simulation } =
     useDashboardStore((state) => ({
       inputSize: state.inputSize,
       branchBehavior: state.branchBehavior,
@@ -12,7 +11,6 @@ const ControlsPanel: React.FC = () => {
       setBranchBehavior: state.setBranchBehavior,
       setScenario: state.setScenario,
       simulation: state.simulation,
-      simulate: state.simulate,
     }));
 
   const branchOptions: Array<"deterministic" | "random"> = ["deterministic", "random"];
@@ -22,16 +20,12 @@ const ControlsPanel: React.FC = () => {
     <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 shadow-panel-md">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.4em] text-slate-500">Simulation Controls</p>
-          <h3 className="text-lg font-semibold text-white">Fine-tune the execution</h3>
+          <p className="text-xs font-semibold uppercase tracking-[0.4em] text-slate-500">Interactive Simulation</p>
+          <h3 className="text-lg font-semibold text-white">Adjust execution inline</h3>
         </div>
-        <motion.button
-          whileTap={{ scale: 0.96 }}
-          className="flex items-center gap-2 rounded-2xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:bg-indigo-500"
-          onClick={() => void simulate()}
-        >
-          Simulate
-        </motion.button>
+        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.3em] text-slate-300">
+          Node-driven
+        </span>
       </div>
 
       <div className="mt-4 space-y-4">

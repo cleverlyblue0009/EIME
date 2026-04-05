@@ -6,21 +6,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/analyze": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
-      },
-      "/intent": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
-      },
-      "/divergence": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
-      },
-      "/simulate": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
+      "/api": "http://127.0.0.1:8000",
+      "/ws": {
+        target: "ws://127.0.0.1:8000",
+        ws: true,
       },
     },
   },

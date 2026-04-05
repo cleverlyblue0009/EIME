@@ -2,10 +2,22 @@ import React from "react";
 import Editor from "@monaco-editor/react";
 
 import { useDashboardStore } from "../store/useDashboardStore";
+import { useDebouncedEffect } from "../hooks/useDebouncedEffect";
 
 const EditorPanel: React.FC = () => {
   const code = useDashboardStore((state) => state.code);
   const setCode = useDashboardStore((state) => state.setCode);
+  const analyze = useDashboardStore((state) => state.analyze);
+
+  useDebouncedEffect(
+    () => {
+      if (code.trim().length > 0) {
+        void analyze(code);
+      }
+    },
+    [code],
+    300
+  );
 
   return (
     <div className="flex flex-col rounded-3xl border border-white/5 bg-slate-900/80 shadow-panel-md">

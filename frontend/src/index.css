@@ -1,17 +1,325 @@
+﻿
+@import "reactflow/dist/style.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: "Inter", "Space Grotesk", "Segoe UI", system-ui, sans-serif;
-  background-color: #0b0f14;
-  color: #e2e8f0;
+  font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --bg-primary: #0f1117;
+  --bg-secondary: #1a1d27;
+  --bg-panel: #1e2130;
+  --border: #2a2d3e;
+  --text-primary: #e8eaf0;
+  --text-secondary: #8b8fa8;
+  --accent-blue: #4f8ef7;
+  --accent-purple: #9b59f7;
+  --accent-teal: #1abc9c;
+  --accent-amber: #f7c948;
+  --node-execution: #1e2130;
+  --node-intent: #1a2540;
+  --node-divergence: #2d1a1a;
+  --node-divergence-border: #e05252;
+  --node-loop: #1a2a2a;
 }
 
 body {
-  @apply bg-brand-dark text-slate-100 min-h-screen antialiased;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  margin: 0;
 }
 
-.glow {
-  box-shadow: 0 10px 40px rgba(99, 102, 241, 0.25);
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+.ime-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1.9fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .ime-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.metrics-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.metric-chip {
+  background: #11141d;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.graph-surface {
+  height: 560px;
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background-color: #0f121b;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 18px 18px;
+  border: 1px solid var(--border);
+}
+
+.graph-viewer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  width: 100%;
+}
+
+.graph-viewer-expanded {
+  position: fixed;
+  inset: 24px;
+  z-index: 1000;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.graph-toolbar {
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.graph-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.graph-flow-shell {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background-color: #0f121b;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.graph-flow-shell > .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.graph-node-shell {
+  min-width: 190px;
+  max-width: 260px;
+  box-sizing: border-box;
+}
+
+.graph-node-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.graph-node-label {
+  display: block;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.graph-node-line {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.graph-node-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.graph-node-handle {
+  width: 8px !important;
+  height: 8px !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+.node {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.node-execution {
+  background: var(--node-execution);
+}
+
+.node-intent {
+  background: var(--node-intent);
+  border-style: dashed;
+  border-color: var(--accent-blue);
+}
+
+.node-divergence {
+  background: var(--node-divergence);
+  border-color: var(--node-divergence-border);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.node-loop {
+  background: var(--node-loop);
+  border-color: var(--accent-teal);
+}
+
+.node-function {
+  background: #1f1a2d;
+  border-color: var(--accent-purple);
+}
+
+.node-data {
+  background: #18232f;
+  border-color: var(--accent-amber);
+}
+
+.edge-intent-violation {
+  stroke: var(--node-divergence-border);
+  stroke-dasharray: 6 4;
+}
+
+.edge-data {
+  stroke: var(--accent-purple);
+  stroke-dasharray: 2 6;
+}
+
+.edge-control {
+  stroke: #6b7280;
+}
+
+.edge-loop {
+  stroke: #94a3b8;
+}
+.trace-timeline {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.trace-pill {
+  background: #11141d;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trace-pill.active {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+.code-editor {
+  height: 420px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.button-primary {
+  background: var(--accent-blue);
+  color: #0b0f14;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.button-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(224, 82, 82, 0); }
+}
+.line-divergence {
+  background: rgba(224, 82, 82, 0.15);
+}
+
+.line-divergence-glyph {
+  background: #e05252;
+  width: 6px !important;
+}
+
+@media (max-width: 900px) {
+  .graph-viewer-expanded {
+    inset: 12px;
+    padding: 12px;
+  }
+
+  .graph-actions {
+    justify-content: flex-start;
+  }
+}
+input, select {
+  background: #11141d;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
 }

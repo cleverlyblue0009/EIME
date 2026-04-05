@@ -1,31 +1,44 @@
-import React from "react";
-
-import ControlsPanel from "./components/ControlsPanel";
-import EditorPanel from "./components/EditorPanel";
-import GraphPanel from "./components/GraphPanel";
+﻿import CodeEditor from "./components/CodeEditor";
+import GraphViewer from "./components/GraphViewer";
+import NodeInspector from "./components/NodeInspector";
 import ReasoningPanel from "./components/ReasoningPanel";
-import TimelineScrubber from "./components/TimelineScrubber";
-import TopBar from "./components/TopBar";
+import MetricsBar from "./components/MetricsBar";
+import TraceTimeline from "./components/TraceTimeline";
+import SimulationControls from "./components/SimulationControls";
 
-const App: React.FC = () => {
+const App = () => {
   return (
-    <div className="min-h-screen bg-brand-dark text-slate-100">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-6">
-        <TopBar />
-
-        <div className="grid gap-4 lg:grid-cols-[1.1fr_1.9fr_1fr]">
-          <EditorPanel />
-
-          <div className="order-last col-span-1 lg:order-none">
-            <GraphPanel />
+    <div className="app-shell">
+      <header className="panel">
+        <div className="panel-header">
+          <div>
+            <h1 style={{ margin: 0, fontSize: 22 }}>IME Universal</h1>
+            <p style={{ margin: 0, color: "var(--text-secondary)" }}>
+              Intent Modeling Engine — LeetCode-grade reasoning and divergence detection
+            </p>
           </div>
+        </div>
+      </header>
 
-          <ReasoningPanel />
+      <MetricsBar />
+
+      <div className="ime-grid">
+        <div className="panel">
+          <CodeEditor />
         </div>
 
-        <ControlsPanel />
-        <TimelineScrubber />
+        <div className="panel graph-surface">
+          <GraphViewer />
+        </div>
+
+        <div className="panel">
+          <ReasoningPanel />
+          <NodeInspector />
+          <SimulationControls />
+        </div>
       </div>
+
+      <TraceTimeline />
     </div>
   );
 };

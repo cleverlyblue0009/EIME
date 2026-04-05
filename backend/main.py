@@ -1,11 +1,10 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.routes.analyze import analyze_router
-from backend.routes.simulate import simulate_router
+from backend.api.routes import router as api_router, stream_analysis
 
 
-app = FastAPI(title="ACRE/EIME", version="1.0.0")
+app = FastAPI(title="IME Universal", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,11 +13,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ ONLY include once with prefix
-app.include_router(analyze_router, prefix="/api")
-app.include_router(simulate_router, prefix="/api")
+# Primary routes without prefix (matches spec)
+app.include_router(api_router)
+# Compatibility prefix for existing clients
+app.include_router(api_router, prefix="/api")
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+@app.websocket("/ws/analyze")
+async def ws_analyze(websocket):
+    await stream_analysis(websocket)
