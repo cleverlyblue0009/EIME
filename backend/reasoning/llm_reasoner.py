@@ -23,6 +23,7 @@ def analyze_reasoning_with_llm(
     structural_intent: Dict[str, Any],
     invariants_checked: list[Dict[str, Any]] | None = None,
     api_key: str | None = None,
+    cognitive_addendum: str = "",
 ) -> Dict[str, Any]:
     load_env_file()
     resolved_api_key = get_gemini_api_key(api_key)
@@ -31,7 +32,14 @@ def analyze_reasoning_with_llm(
             "Gemini reasoning is mandatory. Set GEMINI_API_KEY in .env or send gemini_api_key in the request."
         )
 
-    prompt = _build_prompt(code, trace_summary, divergence_summary, structural_intent, invariants_checked or [])
+    prompt = _build_prompt(
+        code,
+        trace_summary,
+        divergence_summary,
+        structural_intent,
+        invariants_checked or [],
+        cognitive_addendum,
+    )
     payload = {
         "system_instruction": {
             "parts": [
@@ -99,6 +107,7 @@ def _build_prompt(
     divergence_summary: Dict[str, Any],
     structural_intent: Dict[str, Any],
     invariants_checked: list[Dict[str, Any]],
+    cognitive_addendum: str = "",
 ) -> str:
     return (
         "You are the mandatory second-pass reasoning engine.\n"
@@ -129,6 +138,11 @@ def _build_prompt(
         f"Execution trace summary:\n{json.dumps(trace_summary, ensure_ascii=True)}\n\n"
         f"Invariants checked:\n{json.dumps(invariants_checked, ensure_ascii=True)}\n\n"
         f"Detected divergence summary:\n{json.dumps(divergence_summary, ensure_ascii=True)}\n"
+        + (
+            f"\nCognitive profile of this programmer:\n{cognitive_addendum}\n"
+            if cognitive_addendum
+            else ""
+        )
     )
 
 

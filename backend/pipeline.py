@@ -3,13 +3,15 @@
 import uuid
 from typing import Any, Dict, List, Tuple
 
-from backend.api.models import AnalysisResponse, Metrics
+from backend.api.models import AnalysisResponse, CognitivePrior, Metrics
 from backend.alignment.alignment_engine import AlignmentEngine
 from backend.execution.sandbox import execute_with_trace
 from backend.normalizer.trace_normalizer import normalize_trace
 from backend.intent.intent_engine import IntentEngine
 from backend.expectation.expectation_generator import ExpectationGenerator
 from backend.divergence.divergence_engine import DivergenceEngine
+from backend.fingerprint.fingerprint_engine import FingerprintEngine
+from backend.fingerprint.fingerprint_store import FingerprintStore
 from backend.graph.graph_engine import build as build_graph
 from backend.graph.graph_views import build_data_flow_view, build_execution_view
 from backend.graph.intent_graph import build_intent_graph
@@ -34,6 +36,8 @@ expectation_generator = ExpectationGenerator()
 divergence_engine = DivergenceEngine()
 invariant_engine = InvariantEngine()
 alignment_engine = AlignmentEngine()
+fingerprint_store = FingerprintStore()
+fingerprint_engine = FingerprintEngine(fingerprint_store)
 
 
 def build_parse_result(code: str) -> Dict[str, Any]:
@@ -72,14 +76,42 @@ def build_parse_result(code: str) -> Dict[str, Any]:
     }
 
 
-def run_analysis(code: str, stdin_input: str = "", gemini_api_key: str | None = None) -> AnalysisResponse:
+def run_analysis(
+    code: str,
+    stdin_input: str = "",
+    gemini_api_key: str | None = None,
+    user_id: str | None = None,
+) -> AnalysisResponse:
     analysis_id = str(uuid.uuid4())
+    normalized_user_id = user_id.strip() if isinstance(user_id, str) else None
+    if not normalized_user_id:
+        normalized_user_id = None
 
     parse_result = build_parse_result(code)
     execution = execute_with_trace(code, stdin_input)
     normalized_trace = normalize_trace(execution["trace"], parse_result)
 
+    fingerprint: Dict[str, Any] = {}
+    prior: Dict[str, Any] = {}
+    if normalized_user_id:
+        try:
+            fingerprint = fingerprint_store.load(normalized_user_id)
+            prior = fingerprint_engine.build_prior(fingerprint)
+        except Exception:
+            fingerprint = {}
+            prior = {}
+
     intent_model = intent_engine.analyze(parse_result, normalized_trace)
+    if normalized_user_id and prior:
+        try:
+            blindspot_lines = fingerprint_engine.predict_blindspot_lines(
+                fingerprint,
+                parse_result,
+                intent_model,
+            )
+            prior["blind_spot_lines"] = blindspot_lines
+        except Exception:
+            prior["blind_spot_lines"] = []
     expectation_model = expectation_generator.generate(intent_model, normalized_trace, parse_result)
     divergences = divergence_engine.detect(normalized_trace, intent_model, expectation_model, parse_result)
     llm_result = collect_llm_reasoning(
@@ -88,6 +120,7 @@ def run_analysis(code: str, stdin_input: str = "", gemini_api_key: str | None = 
         normalized_trace,
         code=code,
         gemini_api_key=gemini_api_key,
+        cognitive_addendum=prior.get("prompt_addendum", ""),
     )
     semantic_divergences = build_semantic_divergences(llm_result, normalized_trace, intent_model, parse_result, divergences)
     divergences = divergence_engine.finalize(divergences + semantic_divergences, normalized_trace, intent_model, expectation_model)
@@ -117,7 +150,7 @@ def run_analysis(code: str, stdin_input: str = "", gemini_api_key: str | None = 
         intent_steps,
     )
 
-    return AnalysisResponse(
+    response = AnalysisResponse(
         analysis_id=analysis_id,
         normalized_trace=normalized_trace,
         intent_model=intent_model,
@@ -136,6 +169,22 @@ def run_analysis(code: str, stdin_input: str = "", gemini_api_key: str | None = 
         intent=intent_model.model_dump(),
         divergence=_divergence_summary(divergences),
     )
+    if normalized_user_id:
+        try:
+            updated_fingerprint = fingerprint_store.update(normalized_user_id, response)
+            if updated_fingerprint:
+                response.cognitive_prior = CognitivePrior(
+                    user_id=normalized_user_id,
+                    session_count=updated_fingerprint["session_count"],
+                    dominant_error_class=updated_fingerprint.get("dominant_error_class"),
+                    algorithm_blindspots=updated_fingerprint.get("algorithm_blindspots", []),
+                    cognitive_traits=updated_fingerprint.get("cognitive_traits", {}),
+                    predicted_blindspot_lines=prior.get("blind_spot_lines", []),
+                    prompt_addendum=prior.get("prompt_addendum", ""),
+                )
+        except Exception:
+            pass
+    return response
 
 
 def run_analysis_staged(code: str, stdin_input: str = "", gemini_api_key: str | None = None) -> List[Tuple[str, Any]]:

@@ -24,6 +24,7 @@ async def analyze(request: AnalysisRequest) -> AnalysisResponse:
                 request.code,
                 request.stdin_input or "",
                 request.gemini_api_key,
+                request.user_id,
             ),
             timeout=30,
         )
@@ -38,6 +39,7 @@ async def analyze(request: AnalysisRequest) -> AnalysisResponse:
         "code": request.code,
         "stdin_input": request.stdin_input or "",
         "gemini_api_key": request.gemini_api_key,
+        "user_id": request.user_id,
     }
     return result
 
@@ -57,6 +59,7 @@ async def simulate(patch: SimulationPatch) -> AnalysisResponse:
         patched_code,
         cached_context.get("stdin_input", ""),
         cached_context.get("gemini_api_key"),
+        cached_context.get("user_id"),
     )
     _analysis_context_cache[result.analysis_id] = {
         **cached_context,
@@ -77,13 +80,15 @@ async def stream_analysis(websocket: WebSocket) -> None:
         code = payload.get("code", "")
         stdin_input = payload.get("stdin_input", "")
         gemini_api_key = payload.get("gemini_api_key") or payload.get("llm_api_key")
+        user_id = payload.get("user_id")
         for stage, data in run_analysis_staged(code, stdin_input, gemini_api_key):
             await websocket.send_json({"stage": stage, "data": data})
-        final = run_analysis(code, stdin_input, gemini_api_key)
+        final = run_analysis(code, stdin_input, gemini_api_key, user_id)
         _analysis_context_cache[final.analysis_id] = {
             "code": code,
             "stdin_input": stdin_input,
             "gemini_api_key": gemini_api_key,
+            "user_id": user_id,
         }
         await websocket.send_json({"stage": "complete", "data": final.model_dump()})
     except WebSocketDisconnect:

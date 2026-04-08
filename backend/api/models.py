@@ -23,6 +23,7 @@ class AnalysisRequest(BaseModel):
         validation_alias=AliasChoices("gemini_api_key", "llm_api_key"),
         serialization_alias="gemini_api_key",
     )
+    user_id: Optional[str] = None
 
 
 class TraceEvent(BaseModel):
@@ -424,6 +425,16 @@ class ReasoningOutput(BaseModel):
     )
 
 
+class CognitivePrior(BaseModel):
+    user_id: str
+    session_count: int
+    dominant_error_class: Optional[str] = None
+    algorithm_blindspots: List[str] = Field(default_factory=list)
+    cognitive_traits: Dict[str, bool] = Field(default_factory=dict)
+    predicted_blindspot_lines: List[Dict[str, Any]] = Field(default_factory=list)
+    prompt_addendum: str = ""
+
+
 class Metrics(BaseModel):
     intent_confidence: float
     alignment_score: float
@@ -459,6 +470,7 @@ class AnalysisResponse(BaseModel):
     execution_trace: List[Dict[str, Any]] = Field(default_factory=list)
     intent: Dict[str, Any] = Field(default_factory=dict)
     divergence: Dict[str, Any] = Field(default_factory=dict)
+    cognitive_prior: Optional[CognitivePrior] = None
 
 
 class SimulationPatch(BaseModel):

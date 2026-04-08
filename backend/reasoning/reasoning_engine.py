@@ -43,7 +43,14 @@ ALGO_TEMPLATES = {
 }
 
 
-def collect_llm_reasoning(divergences, intent, normalized_trace, code: str = "", gemini_api_key: str | None = None) -> Dict[str, Any]:
+def collect_llm_reasoning(
+    divergences,
+    intent,
+    normalized_trace,
+    code: str = "",
+    gemini_api_key: str | None = None,
+    cognitive_addendum: str = "",
+) -> Dict[str, Any]:
     top = None
     if divergences:
         top = sorted(divergences, key=lambda item: SEVERITY_ORDER.get(item.severity, 0), reverse=True)[0]
@@ -67,6 +74,7 @@ def collect_llm_reasoning(divergences, intent, normalized_trace, code: str = "",
             for item in getattr(intent, "invariants", []) or []
         ],
         api_key=gemini_api_key,
+        cognitive_addendum=cognitive_addendum,
     )
 
 
